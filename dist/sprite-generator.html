@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Rytiger — Sprite Generator</title>
+<style>
+  body { background: #060610; color: #C8D8FF; font-family: 'Courier New', monospace; padding: 20px; }
+  h1 { color: #00B4D8; }
+  .grid { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 20px; }
+  .card { background: rgba(0,180,216,0.05); border: 1px solid rgba(0,180,216,0.2); border-radius: 8px; padding: 12px; text-align: center; }
+  canvas { display: block; margin: 8px auto; image-rendering: pixelated; }
+  button { background: #0077B6; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin: 4px; font-size: 12px; }
+  button:hover { background: #00B4D8; }
+  .dl-all { background: #7C3AED; font-size: 14px; padding: 12px 24px; border-radius: 8px; }
+  .save-all { background: #059669; font-size: 14px; padding: 12px 24px; border-radius: 8px; }
+  #log { font-size: 11px; color: #3A4A6A; margin-top: 8px; min-height: 20px; }
+  .progress { width: 100%; height: 4px; background: rgba(0,180,216,0.1); border-radius: 2px; margin: 8px 0; }
+  .progress-bar { height: 100%; background: #00B4D8; border-radius: 2px; transition: width 0.3s; }
+  .status-ok  { color: #10B981; }
+  .status-err { color: #EF4444; }
+</style>
+</head>
+<body>
+<h1>🎮 Rytiger — Pixel Art Sprite Generator</h1>
+<p>Génération automatique des spritesheets pour tous les personnages.</p>
+<div class="progress"><div class="progress-bar" id="prog" style="width:0%"></div></div>
+<div id="log">Prêt à générer...</div>
+<br>
+<button class="dl-all" onclick="generateAll(false)">⚡ Prévisualiser TOUT</button>
+<button class="save-all" onclick="generateAll(true)">💾 Sauvegarder dans le projet</button>
+<div class="grid" id="grid"></div>
+
+<script>
+// ═══════════════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════════════
+const P = 3; // Logical pixel size (1 logical px = 3x3 real px)
+const FW = 16, FH = 16; // Logical frame size
+const RFW = FW * P, RFH = FH * P; // Real frame size = 48x48
+
+// Animation definitions: name, frames, row
+const HERO_ANIMS = [
+  { name: 'idle',   frames: 6,  row: 0 },
+  { name: 'walk',   frames: 8,  row: 1 },
+  { name: 'attack', frames: 6,  row: 2 },
+  { name: 'hurt',   frames: 3,  row: 3 },
+  { name: 'death',  frames: 7,  row: 4 },
+];
+const HERO_MAX_FRAMES = 8;
+const HERO_ROWS = 5;
+
+const BOSS_ANIMS = [
+  { name: 'idle',   frames: 6,  row: 0 },
+  { name: 'attack', frames: 6,  row: 1 },
+  { name: 'hurt',   frames: 3,  row: 2 },
+  { name: 'death',  frames: 8,  row: 3 },
+];
+const BOSS_MAX_FRAMES = 8;
+const BOSS_ROWS = 4;
+const BP = 5; // Boss pixel size (16x16 logical → 80px, scaled to 96 in CSS)
+const BFW = 16, BFH = 16;
+const RBFW = BFW * BP + 16, RBFH = BFH * BP + 16; // 96x96
+
+// ═══════════════════════════════════════════════
+// COLOR PALETTES
+// ═══════════════════════════════════════════════
+const PAL = {
+  guerrier: {
+    outline: '#090910', helm: '#1E3A5F', armor: '#253E6B', steel: '#4A7FB5',
+    skin: '#D4A574', cape: '#0A1E40', glow: '#00B4D8', sword: '#90E0EF',
+    boot: '#0D1F3C', belt: '#0A1628', eye: '#00B4D8', mouth: '#A07848'
+  },
+  mage: {
+    outline: '#090910', robe: '#2D0A5C', robe2: '#4A1080', trim: '#7C3AED',
+    skin: '#D4A574', hood: '#1A0538', orb: '#48CAE4', staff: '#2D1B69',
+    glow: '#7C3AED', eye: '#48CAE4', mouth: '#A07848', gem: '#FF48A2'
+  },
+  arche: {
+    outline: '#090910', armor: '#0D3B3B', armor2: '#1A5C5C', trim: '#00B4D8',
+    skin: '#D4A574', hood: '#083030', bow: '#00B4D8', arrow: '#90E0EF',
+    boot: '#061E1E', belt: '#051818', eye: '#00E5D8', mouth: '#A07848'
+  },
+  assassin: {
+    outline: '#090910', cloth: '#0A0A1E', cloth2: '#12123A', trim: '#7C3AED',
+    skin: '#B8956A', wrap: '#050518', blade: '#C8D8FF', shadow: '#3A0070',
+    boot: '#080818', belt: '#050515', eye: '#9B59B6', mouth: '#8B6A42'
+  },
+  boss: {
+    outline: '#090910', body: '#1A0030', body2: '#2D0050', crack: '#00B4D8',
+    eye: '#FF0050', wing: '#0D0020', energy: '#7C3AED', horn: '#3A0060',
+    claw: '#C8D8FF', glow: '#FF00AA', void: '#000010', aura: '#4A0080'
+  },
+  minion: {
+    outline: '#090910', body: '#1A0030', body2: '#280045', wing: '#0D0020',
+    eye: '#DC2626', claw: '#C8D8FF', fang: '#E0D0FF', smoke: '#3A0060',
+    tail: '#200040', horn: '#1A0030'
+  }
+};
+
+// ═══════════════════════════════════════════════
+// DRAWING HELPERS
+// ═══════════════════════════════════════════════
+function px(ctx, x, y, c, scale = P) {
+  ctx.fillStyle = c;
+  ctx.fillRect(x * scale, y * scale, scale, scale);
+}
+
+function rect(ctx, x, y, w, h, c, scale = P) {
+  ctx.fillStyle = c;
+  ctx.fillRect(x * scale, y * scale, w * scale, h * scale);
+}
+
+function pxRow(ctx, y, startX, pixels, colors, scale = P) {
+  pixels.forEach((colorKey, i) => {
+    if (colorKey && colors[colorKey]) px(ctx, startX + i, y, colors[colorKey], scale);
+  });
+}
+
+// ═══════════════════════════════════════════════
+// CHARACTER RENDERERS
+// Each fn draws one character at origin (0,0) on ctx
+// dy = vertical offset for breathing/walk bob
+// legPhase = 0..7 for walk cycle
+// animState = 'idle'|'walk'|'attack'|'hurt'|'death'
+// deathFrame = 0..6 for death progression
+// ═══════════════════════════════════════════════
+
+// ─── GUERRIER ──────────────────────────────────
+function drawGuerrier(ctx, dy, legPhase, animState, frame, pal) {
+  const c = pal;
+  const s = P;
+  const died = animState === 'death';
+  const hurt = animState === 'hurt';
+  const atk = animState === 'attack';
+  const opacity = died ? Math.max(0, 1 - frame * 0.15) : 1;
+  if (died && frame >= 6) return;
+  ctx.globalAlpha = opacity;
+
+  const deathTilt = died ? frame * 13 : 0;
+  const hurtTilt = hurt ? 8 : 0;
+  const attackLean = atk && frame > 1 && frame < 5 ? -2 : 0;
+  
+  const bdy = dy + (died ? Math.min(frame * 2, 10) : 0);
+
+  // Death rotation
+  if (died && frame > 1) {
+    ctx.save();
+    ctx.translate(8 * s, 16 * s);
+    ctx.rotate((deathTilt * Math.PI) / 180);
+    ctx.translate(-8 * s, -16 * s);
+  }
+  if (hurt) {
+    ctx.save();
+    ctx.translate(10 * s, 8 * s);
+    ctx.rotate((hurtTilt * Math.PI) / 180);
+    ctx.translate(-10 * s, -8 * s);
+  }
+
+  // SWORD
+  const swordX = atk && frame >= 2 && frame <= 4 ? 13 : 14;
+  const swordY = atk && frame >= 2 && frame <= 4 ? 1 : 2;
+  if (!died || frame < 3) {
+    rect(ctx, swordX, swordY + bdy, 1, 7, c.sword, s);
+    rect(ctx, swordX - 1, swordY + 2 + bdy, 3, 1, c.steel, s); // crossguard
+  }
+
+  // CAPE
+  rect(ctx, 3, 5 + bdy, 2, 5, c.cape, s);
+
+  // HELMET
+  rect(ctx, 5, 1 + bdy, 6, 1, c.outline, s); // top ridge
+  rect(ctx, 5, 2 + bdy, 6, 3, c.helm, s);
+  rect(ctx, 4, 1 + bdy, 1, 3, c.steel, s); // left cheek
+  rect(ctx, 11, 1 + bdy, 1, 3, c.steel, s); // right cheek
+  // Visor slit
+  rect(ctx, 6, 3 + bdy, 4, 1, c.outline, s);
+  rect(ctx, 7, 3 + bdy, 2, 1, c.glow, s); // eye glow
+
+  // ARMOR CHEST
+  rect(ctx, 4, 5 + bdy + attackLean, 8, 5, c.armor, s);
+  rect(ctx, 6, 5 + bdy + attackLean, 4, 5, c.armor2, s); // center plate
+  rect(ctx, 7, 6 + bdy + attackLean, 2, 3, c.steel, s);  // chest decal
+  rect(ctx, 7, 6 + bdy + attackLean, 2, 1, c.glow, s);  // glow line
+
+  // LEFT ARM
+  const lArmX = atk && frame >= 2 && frame <= 4 ? 2 : 2;
+  const lArmY = atk && frame >= 2 && frame <= 4 ? 5 + bdy - 1 : 5 + bdy;
+  rect(ctx, lArmX, lArmY + attackLean, 2, 4, c.armor, s);
+  rect(ctx, lArmX, lArmY + 4 + attackLean, 2, 1, c.steel, s); // gauntlet
+
+  // RIGHT ARM (sword arm)
+  const rArmX = atk && frame >= 2 && frame <= 4 ? 12 : 12;
+  const rArmY = atk && frame >= 2 && frame <= 4 ? 4 + bdy : 5 + bdy;
+  rect(ctx, rArmX, rArmY + attackLean, 2, 4, c.armor, s);
+  rect(ctx, rArmX, rArmY + 4 + attackLean, 2, 1, c.steel, s);
+
+  // ATTACK EFFECT
+  if (atk && frame === 3) {
+    ctx.globalAlpha = 0.7;
+    rect(ctx, 13, 0 + bdy, 3, 10, c.glow + '44', s);
+    ctx.globalAlpha = opacity;
+  }
+
+  // BELT
+  rect(ctx, 4, 10 + bdy + attackLean, 8, 1, c.belt, s);
+
+  // LEGS (walk cycle)
+  const leftLegOffset  = getLegOffset(legPhase, false);
+  const rightLegOffset = getLegOffset(legPhase, true);
+  const deathLegSpread = died ? frame : 0;
+  
+  rect(ctx, 4, 11 + bdy, 4, 4, c.armor, s);  // left leg
+  rect(ctx, 8, 11 + bdy, 4, 4, c.armor, s);  // right leg
+  rect(ctx, 4, 11 + bdy + leftLegOffset,  4, 1, c.steel, s);
+  rect(ctx, 8, 11 + bdy + rightLegOffset, 4, 1, c.steel, s);
+  // Boots
+  rect(ctx, 4, 14 + bdy + deathLegSpread, 4, 2, c.boot, s);
+  rect(ctx, 8, 14 + bdy - deathLegSpread, 4, 2, c.boot, s);
+
+  if (died && frame > 1) ctx.restore();
+  if (hurt) ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+// ─── MAGE ──────────────────────────────────────
+function drawMage(ctx, dy, legPhase, animState, frame, pal) {
+  const c = pal;
+  const s = P;
+  const died = animState === 'death';
+  const hurt = animState === 'hurt';
+  const atk = animState === 'attack';
+  const opacity = died ? Math.max(0.05, 1 - frame * 0.16) : 1;
+  if (died && frame >= 7) return;
+  ctx.globalAlpha = opacity;
+
+  // Float offset for mage
+  const floatY = Math.sin(legPhase * 0.8) * 1;
+  const bdy = dy + floatY + (died ? frame * 1.5 : 0);
+  const hurtLean = hurt ? -3 : 0;
+
+  // STAFF
+  const staffGlow = atk ? (frame < 3 ? c.glow : c.gem) : c.staff;
+  rect(ctx, 2 + hurtLean, 1 + bdy, 1, 12, c.staff, s);
+  rect(ctx, 1 + hurtLean, 0 + bdy, 3, 2, c.trim, s);  // staff top
+  rect(ctx, 2 + hurtLean, 0 + bdy, 1, 2, staffGlow, s); // orb inner
+  
+  // ATTACK ORB CHARGE
+  if (atk && frame >= 2 && frame <= 4) {
+    const glowSize = frame - 1;
+    ctx.globalAlpha = 0.6;
+    rect(ctx, 2 - glowSize + hurtLean, -glowSize + bdy, 1 + glowSize * 2, 2 + glowSize * 2, c.orb, s);
+    ctx.globalAlpha = opacity;
+    if (frame === 3) {
+      // Energy beam
+      ctx.globalAlpha = 0.8;
+      rect(ctx, 3 + hurtLean, 1 + bdy, 13, 1, c.orb, s);
+      ctx.globalAlpha = opacity;
+    }
+  }
+
+  // HOOD
+  rect(ctx, 4, 1 + bdy, 8, 1, c.outline, s);
+  rect(ctx, 3, 2 + bdy, 10, 4, c.hood, s);
+  rect(ctx, 4, 2 + bdy, 8, 3, c.robe, s);
+  rect(ctx, 5, 3 + bdy, 6, 2, c.robe2, s); // face shadow
+  // Eyes glow
+  rect(ctx, 6, 4 + bdy, 1, 1, c.eye, s);
+  rect(ctx, 9, 4 + bdy, 1, 1, c.eye, s);
+  // Gem on hood
+  rect(ctx, 7, 2 + bdy, 2, 1, c.gem, s);
+
+  // ROBE BODY
+  rect(ctx, 4 + hurtLean, 6 + bdy, 8, 7, c.robe, s);
+  rect(ctx, 5 + hurtLean, 6 + bdy, 6, 6, c.robe2, s);
+  // Trim details
+  rect(ctx, 4 + hurtLean, 6 + bdy, 1, 7, c.trim, s); // left trim
+  rect(ctx, 11 + hurtLean, 6 + bdy, 1, 7, c.trim, s); // right trim
+  rect(ctx, 4 + hurtLean, 12 + bdy, 8, 1, c.trim, s); // hem
+
+  // SLEEVES
+  rect(ctx, 2 + hurtLean, 6 + bdy, 2, 5, c.robe, s);   // left sleeve  
+  rect(ctx, 12 + hurtLean, 6 + bdy, 2, 5, c.robe, s);  // right sleeve
+  // Hands
+  rect(ctx, 2 + hurtLean, 11 + bdy, 2, 2, c.skin, s);
+  rect(ctx, 12 + hurtLean, 11 + bdy, 2, 2, c.skin, s);
+
+  // ROBE BOTTOM / FEET (barely visible under robe)
+  if (!died || frame < 4) {
+    const waveL = Math.sin(legPhase * 0.8) > 0 ? 1 : 0;
+    rect(ctx, 4 + hurtLean, 13 + bdy, 3, 3, c.robe2, s); // left foot hint
+    rect(ctx, 9 + hurtLean, 13 + bdy, 3, 3, c.robe2, s); // right foot hint
+  }
+
+  // DEATH PARTICLES
+  if (died && frame >= 3) {
+    ctx.globalAlpha = 0.5;
+    for (let i = 0; i < 4; i++) {
+      const px2 = 3 + i * 3 + (frame % 2) * 2;
+      const py2 = 8 - frame * 2 + i;
+      if (px2 < 16 && py2 > 0) rect(ctx, px2, py2 + bdy, 1, 1, c.glow, s);
+    }
+    ctx.globalAlpha = opacity;
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ─── ARCHE ─────────────────────────────────────
+function drawArche(ctx, dy, legPhase, animState, frame, pal) {
+  const c = pal;
+  const s = P;
+  const died = animState === 'death';
+  const hurt = animState === 'hurt';
+  const atk = animState === 'attack';
+  const opacity = died ? Math.max(0, 1 - frame * 0.15) : 1;
+  if (died && frame >= 7) return;
+  ctx.globalAlpha = opacity;
+
+  const bdy = dy + (died ? Math.min(frame * 2, 12) : 0);
+  const hurtLean = hurt ? 3 : 0;
+  const drawBow = !died || frame < 3;
+
+  // BOW
+  if (drawBow) {
+    const bowX = atk && frame >= 2 && frame <= 4 ? 12 : 13;
+    const isDrawn = atk && frame >= 1 && frame <= 3;
+    // Bow limbs
+    rect(ctx, bowX, 2 + bdy, 1, 12, c.bow, s);
+    rect(ctx, bowX - 1, 2 + bdy, 3, 1, c.bow, s);
+    rect(ctx, bowX - 1, 13 + bdy, 3, 1, c.bow, s);
+    // String
+    const stringX = isDrawn ? bowX - 3 : bowX - 1;
+    rect(ctx, stringX, 3 + bdy, 1, 10, c.armor2, s);
+    // Arrow
+    if (isDrawn) {
+      rect(ctx, stringX - 1, 8 + bdy, stringX + 5, 1, c.arrow, s);
+      rect(ctx, stringX - 1, 8 + bdy, 1, 1, c.glow, s); // arrowhead
+    }
+    // Arrow trail (release)
+    if (atk && frame === 4) {
+      ctx.globalAlpha = 0.7;
+      rect(ctx, 0, 8 + bdy, 12, 1, c.glow, s);
+      ctx.globalAlpha = opacity;
+    }
+  }
+
+  // HOOD
+  rect(ctx, 4, 1 + bdy, 8, 1, c.outline, s);
+  rect(ctx, 4, 2 + bdy, 8, 3, c.hood, s);
+  rect(ctx, 5, 2 + bdy, 6, 2, c.armor2, s);
+  // Face
+  rect(ctx, 5, 4 + bdy, 6, 3, c.skin, s);
+  rect(ctx, 6, 5 + bdy, 1, 1, c.eye, s);
+  rect(ctx, 9, 5 + bdy, 1, 1, c.eye, s);
+
+  // BODY ARMOR
+  rect(ctx, 4 + hurtLean, 7 + bdy, 7, 5, c.armor, s);
+  rect(ctx, 5 + hurtLean, 7 + bdy, 5, 4, c.armor2, s);
+  rect(ctx, 6 + hurtLean, 7 + bdy, 3, 1, c.trim, s); // chest trim
+
+  // LEFT ARM  
+  rect(ctx, 2 + hurtLean, 7 + bdy, 2, 4, c.armor, s);
+  // RIGHT ARM (bow arm, extended when drawing)
+  const rArmX = atk && frame >= 1 && frame <= 3 ? 11 : 11;
+  const rArmLen = atk && frame >= 1 && frame <= 3 ? 6 : 4;
+  rect(ctx, rArmX + hurtLean, 7 + bdy, 2, rArmLen, c.armor, s);
+
+  // CLOAK BACK
+  rect(ctx, 3 + hurtLean, 7 + bdy, 1, 8, c.hood, s);
+
+  // LEGS
+  const l1 = getLegOffset(legPhase, false);
+  const l2 = getLegOffset(legPhase, true);
+  rect(ctx, 4 + hurtLean, 12 + bdy, 3, 4, c.armor, s);
+  rect(ctx, 8 + hurtLean, 12 + bdy, 3, 4, c.armor, s);
+  // Boots
+  const deadSpread = died ? frame : 0;
+  rect(ctx, 4 + hurtLean, 15 + bdy - deadSpread, 3, 1, c.boot, s);
+  rect(ctx, 8 + hurtLean, 15 + bdy + deadSpread, 3, 1, c.boot, s);
+
+  if (died && frame >= 4) {
+    ctx.globalAlpha = opacity * 0.5;
+    rect(ctx, 2, 8 + bdy, 12, 1, c.glow, s);
+    ctx.globalAlpha = opacity;
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ─── ASSASSIN ──────────────────────────────────
+function drawAssassin(ctx, dy, legPhase, animState, frame, pal) {
+  const c = pal;
+  const s = P;
+  const died = animState === 'death';
+  const hurt = animState === 'hurt';
+  const atk = animState === 'attack';
+  const opacity = died ? Math.max(0.03, 1 - frame * 0.15) : 1;
+  if (died && frame >= 7) return;
+
+  // Flicker on hurt
+  if (hurt && frame === 1) { ctx.globalAlpha = 0.3; }
+  else { ctx.globalAlpha = opacity; }
+
+  const bdy = dy + (died ? Math.min(frame * 2, 12) : 0);
+  // Crouch (lower stance)
+  const crouch = 2;
+  
+  // SHADOW AURA (at feet)
+  if (animState === 'idle' || animState === 'walk') {
+    ctx.globalAlpha = 0.4;
+    rect(ctx, 3, 14 + bdy, 10, 2, c.shadow, s);
+    ctx.globalAlpha = opacity;
+  }
+
+  // DAGGERS
+  const daggerVisible = !died || frame < 3;
+  if (daggerVisible) {
+    if (atk && frame >= 2 && frame <= 4) {
+      // Extended daggers during attack
+      rect(ctx, 0, 5 + bdy + crouch, 2, 5, c.blade, s);
+      rect(ctx, 14, 5 + bdy + crouch, 2, 5, c.blade, s);
+    } else {
+      rect(ctx, 2, 8 + bdy + crouch, 1, 4, c.blade, s);
+      rect(ctx, 13, 8 + bdy + crouch, 1, 4, c.blade, s);
+    }
+  }
+
+  // MASK / HEAD
+  rect(ctx, 5, 1 + bdy + crouch, 6, 5, c.cloth, s);
+  rect(ctx, 5, 1 + bdy + crouch, 6, 1, c.trim, s); // top band
+  // Eye slit
+  rect(ctx, 6, 3 + bdy + crouch, 4, 1, c.wrap, s);
+  rect(ctx, 6, 3 + bdy + crouch, 2, 1, c.eye, s); // left eye glow
+  rect(ctx, 9, 3 + bdy + crouch, 1, 1, c.eye, s); // right eye glow
+
+  // BODY (lean forward)
+  const leanX = atk && frame >= 2 && frame <= 3 ? -2 : 0;
+  const hurt2 = hurt ? 2 : 0;
+  rect(ctx, 4 + leanX + hurt2, 6 + bdy + crouch, 8, 5, c.cloth, s);
+  rect(ctx, 5 + leanX + hurt2, 6 + bdy + crouch, 6, 4, c.cloth2, s);
+  rect(ctx, 6 + leanX + hurt2, 7 + bdy + crouch, 2, 1, c.trim, s); // vest trim
+
+  // ARMS
+  rect(ctx, 2 + leanX + hurt2, 6 + bdy + crouch, 2, 5, c.cloth, s);  // left
+  rect(ctx, 12 + leanX + hurt2, 6 + bdy + crouch, 2, 5, c.cloth, s); // right
+
+  // ATTACK SLASH EFFECT
+  if (atk && frame === 3) {
+    ctx.globalAlpha = 0.8;
+    // Diagonal slash marks
+    for (let i = 0; i < 5; i++) {
+      rect(ctx, i * 3, 3 + i + bdy, 3, 1, c.trim, s);
+    }
+    ctx.globalAlpha = opacity;
+  }
+
+  // LEGS (crouched)
+  const l1 = getLegOffset(legPhase, false);
+  const l2 = getLegOffset(legPhase, true);
+  const deadSpread = died ? frame : 0;
+  rect(ctx, 4 + leanX, 11 + bdy + crouch, 3, 4, c.cloth, s);
+  rect(ctx, 9 + leanX, 11 + bdy + crouch, 3, 4, c.cloth, s);
+  rect(ctx, 4 + leanX, 14 + bdy - deadSpread, 3, 1, c.boot, s);
+  rect(ctx, 9 + leanX, 15 + bdy + deadSpread, 3, 1, c.boot, s);
+
+  // DEATH smoke
+  if (died && frame >= 3) {
+    ctx.globalAlpha = 0.5;
+    for (let i = 0; i < frame - 2; i++) {
+      rect(ctx, 4 + i * 2, 8 - i - bdy, 2, 2, c.shadow, s);
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ─── BOSS ──────────────────────────────────────
+function drawBoss(ctx, dy, legPhase, animState, frame, pal) {
+  const c = pal;
+  const s = BP; // Boss uses bigger pixels
+  const died = animState === 'death';
+  const hurt = animState === 'hurt';
+  const atk = animState === 'attack';
+  const opacity = died ? Math.max(0.05, 1 - frame * 0.13) : 1;
+  ctx.globalAlpha = opacity;
+
+  const bdy = dy;
+  const breathe = Math.sin(legPhase * 0.7) > 0 ? 1 : 0;
+  
+  // AURA (background glow)
+  ctx.globalAlpha = opacity * 0.2;
+  rect(ctx, 3, 1 + bdy, 10, 14, c.aura, s);
+  ctx.globalAlpha = opacity;
+
+  // WINGS
+  const wingFlap = legPhase % 4 < 2 ? 1 : 0;
+  // Left wing
+  rect(ctx, 0, 3 + wingFlap + bdy, 4, 8 - wingFlap, c.wing, s);
+  rect(ctx, 0, 3 + wingFlap + bdy, 2, 1, c.body2, s);
+  rect(ctx, 0, 9 + wingFlap + bdy, 3, 1, c.void, s);
+  // Right wing
+  rect(ctx, 12, 3 + wingFlap + bdy, 4, 8 - wingFlap, c.wing, s);
+  rect(ctx, 14, 3 + wingFlap + bdy, 2, 1, c.body2, s);
+  rect(ctx, 13, 9 + wingFlap + bdy, 3, 1, c.void, s);
+
+  // BODY
+  rect(ctx, 4, 2 + bdy + breathe, 8, 10, c.body, s);
+  rect(ctx, 5, 3 + bdy + breathe, 6, 8, c.body2, s);
+  
+  // CRACKS (cyan energy)
+  rect(ctx, 6, 3 + bdy + breathe, 1, 6, c.crack, s);
+  rect(ctx, 9, 4 + bdy + breathe, 1, 5, c.crack, s);
+  rect(ctx, 7, 5 + bdy + breathe, 3, 1, c.crack, s);
+  rect(ctx, 6, 8 + bdy + breathe, 4, 1, c.crack, s);
+
+  // HORNS
+  rect(ctx, 5, 0 + bdy, 1, 3, c.horn, s);
+  rect(ctx, 10, 0 + bdy, 1, 3, c.horn, s);
+  rect(ctx, 5, 0 + bdy, 2, 1, c.aura, s);
+  rect(ctx, 9, 0 + bdy, 2, 1, c.aura, s);
+
+  // EYES (multiple)
+  const eyeGlow = hurt ? c.crack : (atk && frame >= 2 ? c.glow : c.eye);
+  rect(ctx, 5, 4 + bdy + breathe, 2, 2, eyeGlow, s);
+  rect(ctx, 9, 4 + bdy + breathe, 2, 2, eyeGlow, s);
+  rect(ctx, 7, 6 + bdy + breathe, 2, 1, eyeGlow, s); // third eye
+
+  // ARMS / CLAWS
+  const armRaise = atk && frame >= 1 && frame <= 3 ? -2 : 0;
+  rect(ctx, 2, 5 + armRaise + bdy + breathe, 3, 5, c.body2, s);  // left arm
+  rect(ctx, 11, 5 + armRaise + bdy + breathe, 3, 5, c.body2, s); // right arm
+  rect(ctx, 1, 9 + armRaise + bdy + breathe, 3, 2, c.claw, s);   // left claw
+  rect(ctx, 12, 9 + armRaise + bdy + breathe, 3, 2, c.claw, s);  // right claw
+
+  // ATTACK SHOCKWAVE
+  if (atk && frame === 3) {
+    ctx.globalAlpha = 0.7;
+    rect(ctx, 0, 12 + bdy, 16, 1, c.energy, s);
+    rect(ctx, 0, 13 + bdy, 16, 1, c.crack, s);
+    ctx.globalAlpha = opacity;
+  }
+
+  // LEGS
+  rect(ctx, 5, 12 + bdy + breathe, 3, 3, c.body, s);
+  rect(ctx, 8, 12 + bdy + breathe, 3, 3, c.body, s);
+  rect(ctx, 4, 14 + bdy + breathe, 4, 1, c.claw, s); // left foot
+  rect(ctx, 8, 14 + bdy + breathe, 4, 1, c.claw, s); // right foot
+
+  // HURT CRACKS
+  if (hurt) {
+    ctx.globalAlpha = 0.9;
+    rect(ctx, 5, 3 + bdy, 7, 1, c.crack, s);
+    rect(ctx, 7, 4 + bdy, 1, 4, c.crack, s);
+    ctx.globalAlpha = opacity;
+  }
+
+  // DEATH EXPLOSION
+  if (died) {
+    ctx.globalAlpha = Math.min(1, frame * 0.2) * opacity;
+    for (let i = 0; i < Math.min(frame * 2, 8); i++) {
+      const px2 = 2 + (i * 2) % 12;
+      const py2 = 2 + (i * 3) % 12;
+      rect(ctx, px2, py2 + bdy, 2, 2, i % 2 === 0 ? c.crack : c.glow, s);
+    }
+    ctx.globalAlpha = opacity;
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ─── MINION ────────────────────────────────────
+function drawMinion(ctx, dy, legPhase, animState, frame, pal) {
+  const c = pal;
+  const s = P;
+  const died = animState === 'death';
+  const hurt = animState === 'hurt';
+  const atk = animState === 'attack';
+  const opacity = died ? Math.max(0.05, 1 - frame * 0.17) : 1;
+  if (died && frame >= 6) return;
+  ctx.globalAlpha = opacity;
+
+  const bdy = dy + (died ? frame * 2 : 0);
+  const bounce = Math.sin(legPhase * 1.2) > 0 ? 1 : 0;
+  const hurtLean = hurt ? -3 : 0;
+  const atkLunge = atk && frame >= 2 && frame <= 3 ? -4 : 0;
+
+  // WINGS
+  const wingFlap = legPhase % 3 === 0 ? 1 : 0;
+  rect(ctx, 2, 5 - wingFlap + bdy, 3, 4, c.wing, s);   // left wing
+  rect(ctx, 11, 5 - wingFlap + bdy, 3, 4, c.wing, s);  // right wing
+  rect(ctx, 2, 5 - wingFlap + bdy, 3, 1, c.body2, s);
+  rect(ctx, 11, 5 - wingFlap + bdy, 3, 1, c.body2, s);
+
+  // TAIL
+  const tailWag = legPhase % 4 < 2 ? 1 : -1;
+  rect(ctx, 11 + hurtLean + atkLunge, 11 + bounce + tailWag + bdy, 3, 2, c.tail, s);
+  rect(ctx, 13 + hurtLean + atkLunge, 12 + bounce + tailWag * 2 + bdy, 2, 1, c.smoke, s);
+
+  // BODY
+  rect(ctx, 4 + hurtLean + atkLunge, 6 + bounce + bdy, 8, 6, c.body, s);
+  rect(ctx, 5 + hurtLean + atkLunge, 7 + bounce + bdy, 6, 4, c.body2, s);
+
+  // HEAD
+  rect(ctx, 4 + hurtLean + atkLunge, 2 + bounce + bdy, 8, 5, c.body, s);
+  rect(ctx, 5 + hurtLean + atkLunge, 3 + bounce + bdy, 6, 3, c.body2, s);
+
+  // EYES
+  const eyeColor = hurt ? '#FFFFFF' : c.eye;
+  rect(ctx, 6 + hurtLean + atkLunge, 4 + bounce + bdy, 1, 1, eyeColor, s);
+  rect(ctx, 9 + hurtLean + atkLunge, 4 + bounce + bdy, 1, 1, eyeColor, s);
+
+  // FANGS
+  rect(ctx, 6 + hurtLean + atkLunge, 6 + bounce + bdy, 1, 1, c.fang, s);
+  rect(ctx, 9 + hurtLean + atkLunge, 6 + bounce + bdy, 1, 1, c.fang, s);
+
+  // CLAWS / ARMS
+  const clawX = atk && frame >= 2 && frame <= 3 ? atkLunge - 2 : atkLunge;
+  rect(ctx, 2 + hurtLean + clawX, 8 + bounce + bdy, 2, 3, c.body2, s);  // left
+  rect(ctx, 12 + hurtLean + clawX, 8 + bounce + bdy, 2, 3, c.body2, s); // right
+  rect(ctx, 1 + hurtLean + clawX, 10 + bounce + bdy, 2, 1, c.fang, s);  // left claw
+  rect(ctx, 13 + hurtLean + clawX, 10 + bounce + bdy, 2, 1, c.fang, s); // right claw
+
+  // LEGS
+  const lb = getLegOffset(legPhase, false) * 0.5;
+  const rb = getLegOffset(legPhase, true) * 0.5;
+  rect(ctx, 5 + hurtLean + atkLunge, 12 + bounce + bdy, 2, 3, c.body, s);
+  rect(ctx, 9 + hurtLean + atkLunge, 12 + bounce + bdy, 2, 3, c.body, s);
+
+  // DEATH SMOKE
+  if (died && frame >= 2) {
+    ctx.globalAlpha = opacity * 0.7;
+    for (let i = 0; i < frame - 1; i++) {
+      rect(ctx, 4 + i * 2, 4 - i + bdy, 3, 2, c.smoke, s);
+    }
+    ctx.globalAlpha = opacity;
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ═══════════════════════════════════════════════
+// WALK / LEG CYCLE
+// ═══════════════════════════════════════════════
+function getLegOffset(phase, isRight) {
+  // Returns Y offset for knee/shin position
+  const cycle = isRight ? (phase + 4) % 8 : phase % 8;
+  const positions = [0, 1, 2, 1, 0, -1, -2, -1];
+  return positions[Math.min(cycle, positions.length - 1)];
+}
+
+// ═══════════════════════════════════════════════
+// IDLE BOB
+// ═══════════════════════════════════════════════
+function getIdleBob(frame) {
+  const bobs = [0, 0, -1, -1, 0, 0];
+  return bobs[frame % bobs.length];
+}
+
+// ═══════════════════════════════════════════════
+// FRAME GENERATOR
+// ═══════════════════════════════════════════════
+function generateFrame(ctx, frameX, frameY, charType, animName, animFrame, isBoss) {
+  const scale = isBoss ? BP : P;
+  const fw = isBoss ? BFW : FW;
+  const fh = isBoss ? BFH : FH;
+  const rfw = fw * scale + (isBoss ? 16 : 0);
+  const rfh = fh * scale + (isBoss ? 16 : 0);
+
+  // Save context and translate to frame position
+  ctx.save();
+  ctx.clearRect(frameX, frameY, rfw, rfh);
+  ctx.translate(frameX, frameY);
+
+  const pal = PAL[charType];
+  let dy = 0;
+  let legPhase = animFrame;
+
+  if (animName === 'idle') {
+    dy = getIdleBob(animFrame);
+    legPhase = animFrame;
+  } else if (animName === 'walk') {
+    dy = Math.abs(getLegOffset(animFrame, false)) > 0 ? -1 : 0;
+  } else if (animName === 'attack') {
+    dy = 0;
+  } else if (animName === 'hurt') {
+    dy = animFrame === 0 ? -1 : animFrame === 1 ? 1 : 0;
+  } else if (animName === 'death') {
+    dy = 0;
+  }
+
+  switch (charType) {
+    case 'guerrier': drawGuerrier(ctx, dy, legPhase, animName, animFrame, pal); break;
+    case 'mage':     drawMage(ctx, dy, legPhase, animName, animFrame, pal); break;
+    case 'arche':    drawArche(ctx, dy, legPhase, animName, animFrame, pal); break;
+    case 'assassin': drawAssassin(ctx, dy, legPhase, animName, animFrame, pal); break;
+    case 'boss':     drawBoss(ctx, dy, legPhase, animName, animFrame, pal); break;
+    case 'minion':   drawMinion(ctx, dy, legPhase, animName, animFrame, pal); break;
+  }
+
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════════════
+// SPRITESHEET GENERATOR
+// ═══════════════════════════════════════════════
+function generateSpritesheet(charType) {
+  const isBoss = charType === 'boss';
+  const anims = isBoss ? BOSS_ANIMS : HERO_ANIMS;
+  const maxFrames = isBoss ? BOSS_MAX_FRAMES : HERO_MAX_FRAMES;
+  const scale = isBoss ? BP : P;
+  const fw = isBoss ? BFW : FW;
+  const fh = isBoss ? BFH : FH;
+  const rfw = fw * scale + (isBoss ? 16 : 0);
+  const rfh = fh * scale + (isBoss ? 16 : 0);
+  const rows = anims.length;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = maxFrames * rfw;
+  canvas.height = rows * rfh;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  anims.forEach((anim, rowIdx) => {
+    for (let f = 0; f < anim.frames; f++) {
+      generateFrame(ctx, f * rfw, rowIdx * rfh, charType, anim.name, f, isBoss);
+    }
+  });
+
+  return canvas;
+}
+
+// ═══════════════════════════════════════════════
+// PREVIEW + DOWNLOAD
+// ═══════════════════════════════════════════════
+const CHARS = ['guerrier', 'mage', 'arche', 'assassin', 'boss', 'minion'];
+let generated = {};
+
+function renderPreview(charType) {
+  const canvas = generateSpritesheet(charType);
+  generated[charType] = canvas;
+
+  const isBoss = charType === 'boss';
+  const anims = isBoss ? BOSS_ANIMS : HERO_ANIMS;
+  const maxFrames = isBoss ? BOSS_MAX_FRAMES : HERO_MAX_FRAMES;
+  const scale = isBoss ? BP : P;
+  const rfh = (isBoss ? BFH : FH) * scale + (isBoss ? 16 : 0);
+  const rfw = (isBoss ? BFW : FW) * scale + (isBoss ? 16 : 0);
+
+  const div = document.createElement('div');
+  div.className = 'card';
+  div.innerHTML = `<strong>${charType.toUpperCase()}</strong><br><small>${canvas.width}×${canvas.height}px</small>`;
+  
+  // Scale down for display
+  const displayCanvas = document.createElement('canvas');
+  const displayScale = isBoss ? 0.5 : 0.6;
+  displayCanvas.width = Math.ceil(canvas.width * displayScale);
+  displayCanvas.height = Math.ceil(canvas.height * displayScale);
+  displayCanvas.style.border = '1px solid rgba(0,180,216,0.2)';
+  const dCtx = displayCanvas.getContext('2d');
+  dCtx.imageSmoothingEnabled = false;
+  dCtx.drawImage(canvas, 0, 0, displayCanvas.width, displayCanvas.height);
+  div.appendChild(displayCanvas);
+
+  // Animation labels
+  const labels = document.createElement('div');
+  labels.style.cssText = 'font-size:9px;color:#3A4A6A;margin-top:4px;text-align:left;';
+  anims.forEach((a, i) => {
+    labels.innerHTML += `<span style="color:#00B4D8">ROW${i}</span> ${a.name.toUpperCase()} (${a.frames}f)<br>`;
+  });
+  div.appendChild(labels);
+
+  const btn = document.createElement('button');
+  btn.textContent = `💾 Télécharger ${charType}_sheet.png`;
+  btn.onclick = () => downloadCanvas(canvas, `${charType}_sheet.png`);
+  div.appendChild(btn);
+
+  document.getElementById('grid').appendChild(div);
+}
+
+function downloadCanvas(canvas, filename) {
+  canvas.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, 'image/png');
+}
+
+async function generateAll(saveToServer = false) {
+  document.getElementById('grid').innerHTML = '';
+  generated = {};
+  const log = document.getElementById('log');
+  const prog = document.getElementById('prog');
+  let savedCount = 0;
+  let errorCount = 0;
+
+  for (let i = 0; i < CHARS.length; i++) {
+    const c = CHARS[i];
+    log.textContent = `Génération : ${c}...`;
+    prog.style.width = ((i / CHARS.length) * 100) + '%';
+    await new Promise(r => setTimeout(r, 50));
+    renderPreview(c);
+
+    if (saveToServer) {
+      try {
+        const canvas = generated[c];
+        const dataUrl = canvas.toDataURL('image/png');
+        const resp = await fetch('http://localhost:3001/save-sprite', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: `${c}_sheet.png`, dataUrl })
+        });
+        const result = await resp.json();
+        if (result.ok) {
+          savedCount++;
+          log.innerHTML = `<span class="status-ok">✅ ${c}_sheet.png sauvegardé (${Math.round(result.size/1024)}Ko)</span>`;
+        } else {
+          throw new Error(result.error);
+        }
+      } catch (e) {
+        errorCount++;
+        log.innerHTML = `<span class="status-err">❌ ${c}: ${e.message} — <b>Vérifiez que scripts/save-sprites.mjs tourne sur le port 3001</b></span>`;
+      }
+    } else {
+      downloadCanvas(generated[c], `${c}_sheet.png`);
+    }
+  }
+
+  prog.style.width = '100%';
+  if (saveToServer) {
+    log.innerHTML = savedCount === CHARS.length
+      ? `<span class="status-ok">✅ ${savedCount}/6 spritesheets sauvegardés dans public/assets/characters/ — rechargez le jeu !</span>`
+      : `<span class="status-err">⚠️ ${savedCount} OK, ${errorCount} erreurs. Vérifiez que node scripts/save-sprites.mjs tourne.</span>`;
+  } else {
+    log.textContent = `✅ Terminé ! ${CHARS.length} spritesheets générés.`;
+    log.style.color = '#00B4D8';
+  }
+}
+
+// Auto-preview on load
+window.onload = () => {
+  document.getElementById('log').textContent = 'Cliquez sur "Générer & Télécharger TOUT" pour créer les spritesheets.';
+  // Show preview without downloading
+  CHARS.forEach(c => renderPreview(c));
+};
+</script>
+</body>
+</html>
